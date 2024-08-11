@@ -166,7 +166,7 @@ class TobitModel:
             'coef': np.append(self.intercept_, self.coef_),
             'std err': np.append(intercept_std_error, coef_std_errors),
             'z': np.append(self.intercept_ / intercept_std_error, z_values),
-            'P>|z|': np.append(2 * (1 - scipy.stats.norm.cdf(np.abs(self.intercept_ / intercept_std_error))), p_values),
+            'P>|z|': np.append(2 * (1 - scipy.stats.norm.cdf(np.abs(self.intercept_ / intercept_std_error))), p_values).round(4),
             '[0.025': np.append(self.intercept_ - 1.96 * intercept_std_error, self.coef_ - 1.96 * coef_std_errors),
             '0.975]': np.append(self.intercept_ + 1.96 * intercept_std_error, self.coef_ + 1.96 * coef_std_errors)
         }, index=['const'] + list(x.columns))
@@ -198,4 +198,3 @@ class TobitModel:
     def score(self, x, y, scoring_function=mean_absolute_error):
         y_pred = np.dot(x, self.coef_)
         return scoring_function(y, y_pred)
-
