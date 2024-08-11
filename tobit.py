@@ -35,7 +35,6 @@ def tobit_neg_log_likelihood(xs, ys, params):
     y_left, y_mid, y_right = ys
 
     b = params[:-1]
-    # s = math.exp(params[-1])
     s = params[-1]
 
     to_cat = []
@@ -51,7 +50,7 @@ def tobit_neg_log_likelihood(xs, ys, params):
         to_cat.append(right)
     if cens:
         concat_stats = np.concatenate(to_cat, axis=0) / s
-        log_cum_norm = scipy.stats.norm.logcdf(concat_stats)  # log_ndtr(concat_stats)
+        log_cum_norm = scipy.stats.norm.logcdf(concat_stats)
         cens_sum = log_cum_norm.sum()
     else:
         cens_sum = 0
@@ -73,7 +72,6 @@ def tobit_neg_log_likelihood_der(xs, ys, params):
     y_left, y_mid, y_right = ys
 
     b = params[:-1]
-    # s = math.exp(params[-1]) # in censReg, not using chain rule as below; they optimize in terms of log(s)
     s = params[-1]
 
     beta_jac = np.zeros(len(b))
@@ -159,6 +157,37 @@ class TobitModel:
             self.coef_ = result.x[:-1]
             self.intercept_ = 0
         self.sigma_ = result.x[-1]
+
+        # Calculate the standard errors, z-values, and p-values
+        hessian_inv = result.hess_inv  # Inverse of Hessian matrix
+        std_errors = np.sqrt(np.diag(hessian_inv))
+        
+        # Separate standard errors for intercept and coefficients
+        if self.fit_intercept:
+            coef_std_errors = std_errors[1:-1]
+            intercept_std_error = std_errors[0]
+        else:
+            coef_std_errors = std_errors[:-1]
+        
+        z_values = self.coef_ / coef_std_errors
+        p_values = 2 * (1 - scipy.stats.norm.cdf(np.abs(z_values)))
+
+        # Create a summary DataFrame
+        summary_df = pd.DataFrame({
+            'Coefficient': np.append(self.intercept_, self.coef_),
+            'Std. Error': np.append(intercept_std_error, coef_std_errors),
+            'z value': np.append(self.intercept_ / intercept_std_error, z_values),
+            'Pr(>|z|)': np.append(2 * (1 - scipy.stats.norm.cdf(np.abs(self.intercept_ / intercept_std_error))), p_values)
+        }, index=['Intercept'] + list(x.columns))
+
+        # Print the summary as a table
+        print("\nSummary:")
+        print(summary_df.to_string())
+
+        print(f"\nSigma (scale): {self.sigma_:.4f}")
+        print(f"Log-likelihood: {result.fun:.4f}")
+        print(f"Number of Iterations: {result.nit}")
+
         return self
 
     def predict(self, x):
