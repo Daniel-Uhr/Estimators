@@ -1,6 +1,5 @@
 import math
 import warnings
-
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
@@ -8,7 +7,6 @@ import scipy.stats
 from scipy.special import log_ndtr
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, mean_absolute_error
-
 
 def split_left_right_censored(x, y, cens):
     counts = cens.value_counts()
@@ -22,13 +20,11 @@ def split_left_right_censored(x, y, cens):
             split = cens == value
             y_split = np.squeeze(y[split].values)
             x_split = x[split].values
-
         else:
             y_split, x_split = None, None
         xs.append(x_split)
         ys.append(y_split)
     return xs, ys
-
 
 def tobit_neg_log_likelihood(xs, ys, params):
     x_left, x_mid, x_right = xs
@@ -65,7 +61,6 @@ def tobit_neg_log_likelihood(xs, ys, params):
     loglik = cens_sum + mid_sum
 
     return - loglik
-
 
 def tobit_neg_log_likelihood_der(xs, ys, params):
     x_left, x_mid, x_right = xs
@@ -107,10 +102,9 @@ def tobit_neg_log_likelihood_der(xs, ys, params):
         mid_sigma = (np.square(mid_stats) - 1).sum()
         sigma_jac += mid_sigma
 
-    combo_jac = np.append(beta_jac, sigma_jac / s)  # by chain rule, since the expression above is dloglik/dlogsigma
+    combo_jac = np.append(beta_jac, sigma_jac / s)
 
     return -combo_jac
-
 
 class TobitModel:
     def __init__(self, fit_intercept=True):
@@ -124,11 +118,6 @@ class TobitModel:
     def fit(self, x, y, cens, verbose=False):
         """
         Fit a maximum-likelihood Tobit regression
-        :param x: Pandas DataFrame (n_samples, n_features): Data
-        :param y: Pandas Series (n_samples,): Target
-        :param cens: Pandas Series (n_samples,): -1 indicates left-censored samples, 0 for uncensored, 1 for right-censored
-        :param verbose: boolean, show info from minimization
-        :return:
         """
         x_copy = x.copy()
         if self.fit_intercept:
@@ -174,19 +163,32 @@ class TobitModel:
 
         # Create a summary DataFrame
         summary_df = pd.DataFrame({
-            'Coefficient': np.append(self.intercept_, self.coef_),
-            'Std. Error': np.append(intercept_std_error, coef_std_errors),
-            'z value': np.append(self.intercept_ / intercept_std_error, z_values),
-            'Pr(>|z|)': np.append(2 * (1 - scipy.stats.norm.cdf(np.abs(self.intercept_ / intercept_std_error))), p_values)
-        }, index=['Intercept'] + list(x.columns))
+            'coef': np.append(self.intercept_, self.coef_),
+            'std err': np.append(intercept_std_error, coef_std_errors),
+            'z': np.append(self.intercept_ / intercept_std_error, z_values),
+            'P>|z|': np.append(2 * (1 - scipy.stats.norm.cdf(np.abs(self.intercept_ / intercept_std_error))), p_values),
+            '[0.025': np.append(self.intercept_ - 1.96 * intercept_std_error, self.coef_ - 1.96 * coef_std_errors),
+            '0.975]': np.append(self.intercept_ + 1.96 * intercept_std_error, self.coef_ + 1.96 * coef_std_errors)
+        }, index=['const'] + list(x.columns))
 
-        # Print the summary as a table
-        print("\nSummary:")
+        # Print the summary with a similar layout to the Heckman results
+        print("  Tobit Regression Results")
+        print("="*40)
+        print(f"Dep. Variable:                     {y.name}")
+        print(f"Model:                            Tobit")
+        print(f"Method:                           Maximum Likelihood")
+        print(f"Date:                             {pd.Timestamp.now().strftime('%a, %d %b %Y')}")
+        print(f"Time:                             {pd.Timestamp.now().strftime('%H:%M:%S')}")
+        print(f"No. Observations:                 {len(y)}")
+        print(f"No. Censored Observations:        {len(y) - sum(cens == 0)}")
+        print(f"No. Uncensored Observations:      {sum(cens == 0)}")
+        print("="*74)
         print(summary_df.to_string())
-
-        print(f"\nSigma (scale): {self.sigma_:.4f}")
-        print(f"Log-likelihood: {result.fun:.4f}")
-        print(f"Number of Iterations: {result.nit}")
+        print("="*74)
+        print(f"Sigma (scale):                    {self.sigma_:.4f}")
+        print(f"Log-likelihood:                   {result.fun:.4f}")
+        print(f"Number of Iterations:             {result.nit}")
+        print("="*74)
 
         return self
 
@@ -196,3 +198,4 @@ class TobitModel:
     def score(self, x, y, scoring_function=mean_absolute_error):
         y_pred = np.dot(x, self.coef_)
         return scoring_function(y, y_pred)
+
