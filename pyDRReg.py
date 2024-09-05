@@ -84,26 +84,36 @@ def OR_att(df, X_cols, T_col, Y_col):
         'CI': (ci_lower, ci_upper)
     }
 
-# Main class to perform Outcome Regression estimation with bootstrap
-class outregress:
-    def __init__(self, df, X_cols, T_col, Y_col, method='ate', n_bootstrap=50):
+# Main class to perform estimation with various estimators
+class pyDRReg:
+    def __init__(self, df, X_cols, T_col, Y_col, method='ate', estimator='OR', n_bootstrap=50):
         self.df = df
         self.X_cols = X_cols
         self.T_col = T_col
         self.Y_col = Y_col
         self.method = method
+        self.estimator = estimator.upper()  # Convert to uppercase to standardize
         self.n_bootstrap = n_bootstrap
         self.results = None
+        self._run_estimation()  # Run estimation automatically upon initialization
     
-    def fit(self):
+    def _select_estimator(self):
+        # Select the appropriate estimator function based on the method and estimator type
+        if self.estimator == 'OR':
+            return OR_ate if self.method == 'ate' else OR_att
+        # Add more estimators here as needed
+        else:
+            raise ValueError(f"Estimator '{self.estimator}' not recognized. Available estimators: 'OR'.")
+
+    def _run_estimation(self):
         estimates = []
-        estimator_func = OR_ate if self.method == 'ate' else OR_att
+        estimator_func = self._select_estimator()
         
         # Bootstrap process
         for _ in range(self.n_bootstrap):
             # Resample the data with replacement
             df_resampled = resample(self.df, replace=True, n_samples=len(self.df))
-            # Calculate the estimate using the selected estimator function (ATE or ATT)
+            # Calculate the estimate using the selected estimator function
             estimate = estimator_func(df_resampled, self.X_cols, self.T_col, self.Y_col)['Estimate']
             estimates.append(estimate)
         
@@ -117,6 +127,7 @@ class outregress:
         
         # Store results
         self.results = {
+            'Estimator': self.estimator,
             'Method': self.method.upper(),
             'Estimate': mean_estimate,
             'SE': se,
@@ -126,4 +137,6 @@ class outregress:
         }
     
     def summary(self):
-        if self.result
+        if self.results is None:
+            raise ValueError("Estimation has not been completed.")
+        return self.results
