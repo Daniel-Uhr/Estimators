@@ -3,6 +3,7 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sklearn.utils import resample
 from scipy import stats
+import statsmodels.formula.api as smf
 
 # Function to calculate robust standard errors using the sandwich estimator
 def robust_se(model, X, Y):
@@ -84,6 +85,51 @@ def OR_att(df, X_cols, T_col, Y_col):
         'CI': (ci_lower, ci_upper)
     }
 
+# Function to estimate ATE using IPW (Inverse Probability Weighting)
+def IPW_ate(df, X_cols, T_col, Y_col):
+    # Estimate propensity scores using logistic regression
+    formula_pscore = f"{T_col} ~ " + " + ".join(X_cols)
+    df['pscore'] = smf.logit(formula_pscore, data=df).fit().predict()
+    
+    # Calculate weights for ATE
+    df['W1'] = 1 / df['pscore']
+    df.loc[df[T_col] == 0, 'W1'] = 0
+    df['W2'] = 1 / (1 - df['pscore'])
+    df.loc[df[T_col] == 1, 'W2'] = 0
+    df['W_ATE'] = df['W1'] + df['W2']
+    
+    # Weighted regression for ATE
+    model_ate = smf.wls(f"{Y_col} ~ {T_col}", data=df, weights=df['W_ATE']).fit()
+    
+    return {
+        'Estimate': model_ate.params[T_col],
+        'SE': model_ate.bse[T_col],
+        't-stat': model_ate.tvalues[T_col],
+        'p-value': model_ate.pvalues[T_col],
+        'CI': (model_ate.conf_int().loc[T_col, 0], model_ate.conf_int().loc[T_col, 1])
+    }
+
+# Function to estimate ATT using IPW (Inverse Probability Weighting)
+def IPW_att(df, X_cols, T_col, Y_col):
+    # Estimate propensity scores using logistic regression
+    formula_pscore = f"{T_col} ~ " + " + ".join(X_cols)
+    df['pscore'] = smf.logit(formula_pscore, data=df).fit().predict()
+    
+    # Calculate weights for ATT
+    df['W_ATT'] = df['pscore'] / (1 - df['pscore'])
+    df.loc[df[T_col] == 1, 'W_ATT'] = 1
+    
+    # Weighted regression for ATT
+    model_att = smf.wls(f"{Y_col} ~ {T_col}", data=df, weights=df['W_ATT']).fit()
+    
+    return {
+        'Estimate': model_att.params[T_col],
+        'SE': model_att.bse[T_col],
+        't-stat': model_att.tvalues[T_col],
+        'p-value': model_att.pvalues[T_col],
+        'CI': (model_att.conf_int().loc[T_col, 0], model_att.conf_int().loc[T_col, 1])
+    }
+
 # Main class to perform estimation with various estimators
 class pyDRReg:
     def __init__(self, df, X_cols, T_col, Y_col, method='ate', estimator='OR', n_bootstrap=50):
@@ -101,9 +147,10 @@ class pyDRReg:
         # Select the appropriate estimator function based on the method and estimator type
         if self.estimator == 'OR':
             return OR_ate if self.method == 'ate' else OR_att
-        # Add more estimators here as needed
+        elif self.estimator == 'IPW':
+            return IPW_ate if self.method == 'ate' else IPW_att
         else:
-            raise ValueError(f"Estimator '{self.estimator}' not recognized. Available estimators: 'OR'.")
+            raise ValueError(f"Estimator '{self.estimator}' not recognized. Available estimators: 'OR', 'IPW'.")
 
     def _run_estimation(self):
         estimates = []
@@ -125,7 +172,7 @@ class pyDRReg:
         z_value = mean_estimate / se
         p_value = 2 * (1 - stats.norm.cdf(np.abs(z_value)))
         
-        # Store results
+          # Store results
         self.results = {
             'Estimator': self.estimator,
             'Method': self.method.upper(),
@@ -140,3 +187,4 @@ class pyDRReg:
         if self.results is None:
             raise ValueError("Estimation has not been completed.")
         return self.results
+
