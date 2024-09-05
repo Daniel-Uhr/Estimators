@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.utils import resample
 from scipy import stats
 import statsmodels.formula.api as smf
@@ -130,6 +130,32 @@ def IPW_att(df, X_cols, T_col, Y_col):
         'CI': (model_att.conf_int().loc[T_col, 0], model_att.conf_int().loc[T_col, 1])
     }
 
+# Function to estimate ATE and ATT using Doubly Robust Estimator
+def DR_ate_att(df, X_cols, T_col, Y_col):
+    X_np = df[X_cols].values  # Convert X to numpy array
+    T_np = df[T_col].values  # Convert T to numpy array
+    Y_np = df[Y_col].values  # Convert Y to numpy array
+
+    # Estimate propensity scores
+    ps = LogisticRegression(C=1e6, max_iter=1000).fit(X_np, T_np).predict_proba(X_np)[:, 1]
+    df["ps"] = ps  # Add ps to DataFrame for consistency
+
+    # Estimate mu0 and mu1 using a combined model
+    mu_model = LinearRegression().fit(df[X_cols + [T_col]], df[Y_col])
+    mu0 = mu_model.predict(df[X_cols].assign(Treated=0))
+    mu1 = mu_model.predict(df[X_cols].assign(Treated=1))
+
+    # Calculate ATE using DR formula
+    dr_ate = mu1 - mu0 + (T_np / ps) * (Y_np - mu1) - ((1 - T_np) / (1 - ps)) * (Y_np - mu0)
+    
+    # Calculate ATT using DR formula
+    dr_att = mu1 - mu0 + df[T_col] * (Y_np - mu1) - (1 - df[T_col]) * ps / (1 - ps) * (Y_np - mu0)
+
+    return {
+        'ATE_Estimate': np.mean(dr_ate),
+        'ATT_Estimate': np.mean(dr_att)
+    }
+
 # Main class to perform estimation with various estimators
 class pyDRReg:
     def __init__(self, df, X_cols, T_col, Y_col, method='ate', estimator='OR', n_bootstrap=50):
@@ -149,8 +175,10 @@ class pyDRReg:
             return OR_ate if self.method == 'ate' else OR_att
         elif self.estimator == 'IPW':
             return IPW_ate if self.method == 'ate' else IPW_att
+        elif self.estimator == 'DR':
+            return DR_ate_att
         else:
-            raise ValueError(f"Estimator '{self.estimator}' not recognized. Available estimators: 'OR', 'IPW'.")
+            raise ValueError(f"Estimator '{self.estimator}' not recognized. Available estimators: 'OR', 'IPW', 'DR'.")
 
     def _run_estimation(self):
         estimates = []
@@ -160,8 +188,15 @@ class pyDRReg:
         for _ in range(self.n_bootstrap):
             # Resample the data with replacement
             df_resampled = resample(self.df, replace=True, n_samples=len(self.df))
+            
             # Calculate the estimate using the selected estimator function
-            estimate = estimator_func(df_resampled, self.X_cols, self.T_col, self.Y_col)['Estimate']
+            if self.estimator == 'DR':
+                # DR estimator returns both ATE and ATT, select based on method
+                dr_results = estimator_func(df_resampled, self.X_cols, self.T_col, self.Y_col)
+                estimate = dr_results['ATE_Estimate'] if self.method == 'ate' else dr_results['ATT_Estimate']
+            else:
+                estimate = estimator_func(df_resampled, self.X_cols, self.T_col, self.Y_col)['Estimate']
+            
             estimates.append(estimate)
         
         # Calculate standard error, confidence intervals, and p-value
@@ -172,7 +207,7 @@ class pyDRReg:
         z_value = mean_estimate / se
         p_value = 2 * (1 - stats.norm.cdf(np.abs(z_value)))
         
-          # Store results
+        # Store results
         self.results = {
             'Estimator': self.estimator,
             'Method': self.method.upper(),
@@ -187,4 +222,3 @@ class pyDRReg:
         if self.results is None:
             raise ValueError("Estimation has not been completed.")
         return self.results
-
