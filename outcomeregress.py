@@ -1,79 +1,132 @@
 import numpy as np
 import pandas as pd
-import statsmodels.api as sm
-from statsmodels.genmod.generalized_linear_model import GLM
-from statsmodels.genmod.families import Gaussian, Binomial
-from statsmodels.genmod.families.links import identity, logit
+from sklearn.linear_model import LinearRegression
+from sklearn.utils import resample
+from scipy import stats
 
-def dr(data, outcome, treatvar, ovars=None, pvars=None, family='gaussian', link='identity', vce='robust', genvars=None, debug=False):
-    # Setting defaults
-    if ovars is None:
-        ovars = []
-    if pvars is None:
-        pvars = []
-    if family == 'gaussian':
-        family = Gaussian()
-    if link == 'identity':
-        link = identity()
+# Function to calculate robust standard errors using the sandwich estimator
+def robust_se(model, X, Y):
+    predictions = model.predict(X)
+    residuals = Y - predictions
+    X_design = np.hstack([np.ones((X.shape[0], 1)), X])  # Add constant term
+    bread = np.linalg.inv(X_design.T @ X_design)
+    meat = np.sum((residuals ** 2)[:, None, None] * (X_design[:, :, None] @ X_design[:, None, :]), axis=0)
+    robust_cov = bread @ meat @ bread
+    robust_se = np.sqrt(np.diag(robust_cov))
+    return robust_se[1]  # Return the standard error of the treatment effect
 
-    print("\nDoubly Robust Estimate of the effect of", treatvar, "on", outcome)
-
-    # Filter data based on treatment variable
-    treatment_values = data[treatvar].unique()
-    if len(treatment_values) != 2:
-        raise ValueError("The treatment variable must only take 2 values in the sample.")
+# Function to estimate ATE using Outcome Regression
+def OR_ate(df, X_cols, T_col, Y_col):
+    X = df[X_cols].values
+    T = df[T_col].values
+    Y = df[Y_col].values
     
-    exp = treatment_values[1]  # Assumes the second value is the treated group
-    data['treat'] = (data[treatvar] == exp).astype(int)
-
-    # Fit propensity model
-    model_propensity = sm.Logit(data['treat'], sm.add_constant(data[pvars]))
-    result_propensity = model_propensity.fit(disp=debug)
-    data['ptreat'] = result_propensity.predict(sm.add_constant(data[pvars]))
-    data['iptwt'] = data['treat'] / data['ptreat'] + (1 - data['treat']) / (1 - data['ptreat'])
-    data['ipt_est'] = (2 * data['treat'] - 1) * data[outcome] * data['iptwt']
-
-    # Fit outcome model for treated
-    model_mu1 = GLM(data[outcome][data['treat'] == 1], sm.add_constant(data[ovars]), family=family, link=link)
-    result_mu1 = model_mu1.fit()
-    data['mu1'] = result_mu1.predict(sm.add_constant(data[ovars]))
-
-    # Fit outcome model for control
-    model_mu0 = GLM(data[outcome][data['treat'] == 0], sm.add_constant(data[ovars]), family=family, link=link)
-    result_mu0 = model_mu0.fit()
-    data['mu0'] = result_mu0.predict(sm.add_constant(data[ovars]))
-
-    data['mudiff'] = data['mu1'] - data['mu0']
-
-    # Combine into robust estimate
-    data['mdiff'] = (-1 * (data['treat'] - data['ptreat']) * data['mu1'] / data['ptreat']) - \
-                    ((data['treat'] - data['ptreat']) * data['mu0'] / (1 - data['ptreat']))
-    data['drdiff1'] = data['ipt_est'] + data['mdiff']
-    data['dr1'] = data['treat'] * data[outcome] / data['ptreat'] - (data['treat'] - data['ptreat']) * data['mu1'] / data['ptreat']
-    data['dr0'] = (1 - data['treat']) * data[outcome] / (1 - data['ptreat']) + (data['treat'] - data['ptreat']) * data['mu0'] / (1 - data['ptreat'])
-    data['drdiff2'] = data['dr1'] - data['dr0']
-
-    dr1_mean = data['dr1'].mean()
-    dr0_mean = data['dr0'].mean()
-    dr_est = data['drdiff2'].mean()
-
-    n = len(data)
-
-    # Calculate Standard Error
-    data['I'] = data['dr1'] - data['dr0'] - dr_est
-    data['I2'] = data['I'] ** 2
-    dr_var = data['I2'].mean() / n
-
-    # Display results
-    print("\nResults:")
-    print(f"DR Estimate: {dr_est}")
-    print(f"DR Variance: {dr_var}")
-    print(f"DR1 Mean: {dr1_mean}")
-    print(f"DR0 Mean: {dr0_mean}")
-
+    # Model for untreated (D=0)
+    model_0 = LinearRegression().fit(X[T == 0], Y[T == 0])
+    mu0 = model_0.predict(X)
+    
+    # Model for treated (D=1)
+    model_1 = LinearRegression().fit(X[T == 1], Y[T == 1])
+    mu1 = model_1.predict(X)
+    
+    # Estimate ATE
+    OR_ate_estimate = np.mean(mu1 - mu0)
+    
+    # Calculate robust standard error for ATE
+    se_ate = robust_se(model_1, X[T == 1], Y[T == 1]) + robust_se(model_0, X[T == 0], Y[T == 0])
+    
+    # Calculate confidence interval and p-value
+    z_value = OR_ate_estimate / se_ate
+    p_value = 2 * (1 - stats.norm.cdf(np.abs(z_value)))
+    ci_lower = OR_ate_estimate - 1.96 * se_ate
+    ci_upper = OR_ate_estimate + 1.96 * se_ate
+    
     return {
-        'dr_est': dr_est,
-        'dr_var': dr_var,
-        'dr0': dr0_mean,
-        'dr1': dr1_mean
+        'Estimate': OR_ate_estimate,
+        'SE': se_ate,
+        't-stat': z_value,
+        'p-value': p_value,
+        'CI': (ci_lower, ci_upper)
     }
+
+# Function to estimate ATT using Outcome Regression
+def OR_att(df, X_cols, T_col, Y_col):
+    X_treated = df[df[T_col] == 1][X_cols].values
+    Y_treated = df[df[T_col] == 1][Y_col].values
+    X_control = df[df[T_col] == 0][X_cols].values
+    Y_control = df[df[T_col] == 0][Y_col].values
+    
+    # Models
+    model_treated = LinearRegression().fit(X_treated, Y_treated)
+    model_control = LinearRegression().fit(X_control, Y_control)
+    
+    # Predictions
+    mu1_X = model_treated.predict(X_treated)
+    mu0_X = model_control.predict(X_treated)  # Use treated X for counterfactual
+    
+    # Estimate ATT
+    OR_att_estimate = np.mean(mu1_X - mu0_X)
+    
+    # Calculate robust standard error for ATT
+    se_att = robust_se(model_treated, X_treated, Y_treated) + robust_se(model_control, X_control, Y_control)
+    
+    # Calculate confidence interval and p-value
+    z_value = OR_att_estimate / se_att
+    p_value = 2 * (1 - stats.norm.cdf(np.abs(z_value)))
+    ci_lower = OR_att_estimate - 1.96 * se_att
+    ci_upper = OR_att_estimate + 1.96 * se_att
+    
+    return {
+        'Estimate': OR_att_estimate,
+        'SE': se_att,
+        't-stat': z_value,
+        'p-value': p_value,
+        'CI': (ci_lower, ci_upper)
+    }
+
+# Main class to perform Outcome Regression estimation with bootstrap
+class outregress:
+    def __init__(self, df, X_cols, T_col, Y_col, method='ate', n_bootstrap=50):
+        self.df = df
+        self.X_cols = X_cols
+        self.T_col = T_col
+        self.Y_col = Y_col
+        self.method = method
+        self.n_bootstrap = n_bootstrap
+        self.results = None
+    
+    def fit(self):
+        estimates = []
+        estimator_func = OR_ate if self.method == 'ate' else OR_att
+        
+        # Bootstrap process
+        for _ in range(self.n_bootstrap):
+            # Resample the data with replacement
+            df_resampled = resample(self.df, replace=True, n_samples=len(self.df))
+            # Calculate the estimate using the selected estimator function (ATE or ATT)
+            estimate = estimator_func(df_resampled, self.X_cols, self.T_col, self.Y_col)['Estimate']
+            estimates.append(estimate)
+        
+        # Calculate standard error, confidence intervals, and p-value
+        se = np.std(estimates, ddof=1)
+        mean_estimate = np.mean(estimates)
+        ci_lower = mean_estimate - 1.96 * se
+        ci_upper = mean_estimate + 1.96 * se
+        z_value = mean_estimate / se
+        p_value = 2 * (1 - stats.norm.cdf(np.abs(z_value)))
+        
+        # Store results
+        self.results = {
+            'Method': self.method.upper(),
+            'Estimate': mean_estimate,
+            'SE': se,
+            't-stat': z_value,
+            'p-value': p_value,
+            'CI': (ci_lower, ci_upper)
+        }
+    
+    def summary(self):
+        if self.results is None:
+            raise ValueError("Model has not been fitted yet. Please run the .fit() method first.")
+        return self.results
+
